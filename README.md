@@ -12,6 +12,7 @@ An intelligent procurement management platform that leverages AI to streamline t
 
 ### Install Steps
 1. **Clone the repository**
+
    ```bash
    git clone <repository-url>
    cd ai-rfp-management-system
@@ -151,6 +152,8 @@ No seed data scripts are provided. You can manually add vendors through the fron
 - **Email-Based Communication**: Leveraged SMTP for sending RFPs and IMAP for receiving proposals to maintain email as the primary communication channel
 - **Relative AI Scoring**: Proposals are scored relatively against each other rather than absolute scales for more meaningful comparisons
 - **Single Active RFP Assumption**: Email polling associates incoming proposals with the most recently created RFP for simplicity
+
+<img width="844" height="545" alt="Screenshot 2026-01-17 at 6 35 16 PM" src="https://github.com/user-attachments/assets/b58f6d75-35bf-451c-91d5-c6addf735aaf" />
 
 ### Assumptions Made
 - **Vendor Email Matching**: All incoming proposal emails come from pre-registered vendors in the system
