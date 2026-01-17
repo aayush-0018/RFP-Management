@@ -1,0 +1,28 @@
+.emails-page {
+    padding: 20px;
+}
+
+.emails-page h1 {
+    color: #333;
+}
+
+.emails-page button {
+    background-color: #FF9800;
+    color: white;
+    padding: 10px 20px;
+    border: none;
+    cursor: pointer;
+    margin-bottom: 20px;
+}
+
+.emails-page ul {
+    list-style-type: none;
+    padding: 0;
+}
+
+.emails-page li {
+    background-color: #f9f9f9;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 5px;
+}

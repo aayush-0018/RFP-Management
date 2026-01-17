@@ -1,0 +1,29 @@
+{
+  "name": "rfp-backend",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.19.2",
+    "imap-simple": "^5.1.0",
+    "mailparser": "^3.9.1",
+    "mongodb": "^7.0.0",
+    "mongoose": "^9.1.3",
+    "nodemailer": "^7.0.12",
+    "openai": "^6.16.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
