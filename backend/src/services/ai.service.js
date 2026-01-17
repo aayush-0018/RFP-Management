@@ -59,7 +59,37 @@ Schema:
     }
 }
 
-async function evaluateProposals(proposals, rfpRequirements) {
+async function extractProposalFacts(proposal) {
+    const completion = await openrouter.chat.completions.create({
+        model: 'openai/gpt-oss-20b',
+        temperature: 0,
+        messages: [
+            {
+                role: 'system',
+                content: `
+Extract factual numeric data from the proposal.
+
+Return ONLY valid JSON:
+{
+  "totalPrice": number | null,
+  "deliveryDays": number | null,
+  "warrantyYears": number | null
+}
+If information is missing, use null.
+                `,
+            },
+            {
+                role: 'user',
+                content: proposal.rawEmailContent,
+            },
+        ],
+    });
+
+    return safeJsonParse(completion.choices[0].message.content);
+}
+
+
+async function evaluateSingleProposal(proposal, rfpRequirements) {
     try {
         const completion = await openrouter.chat.completions.create({
             model: 'openai/gpt-oss-20b',
@@ -68,45 +98,40 @@ async function evaluateProposals(proposals, rfpRequirements) {
                 {
                     role: 'system',
                     content: `
-You are an expert procurement analyst responsible for evaluating vendor proposals
-against a given RFP in a fair, consistent, and explainable manner.
+You are an expert procurement analyst.
 
-Evaluation Rules (IMPORTANT):
-1. Evaluate EACH proposal independently first, then score them RELATIVELY.
-2. Score proposals on a scale of 0–100 using the following weighted criteria:
-   - Requirement Match (40%): How closely the proposal satisfies technical, quantity,
-     delivery, payment, and warranty requirements.
-   - Clarity & Completeness (20%): How clearly and completely the vendor explains
-     their offer, pricing, timelines, and commitments.
-   - Feasibility & Risk (20%): Likelihood of successful delivery within timeline,
-     clarity of warranty/support, and operational reliability.
-   - Value for Money (20%): Perceived value relative to budget and other proposals,
-     not just lowest cost.
+You MUST compute explicit numeric subscores and then sum them.
+Do NOT round generously.
+Different proposals MUST result in different scores unless they are effectively identical.
 
-3. Scores MUST be comparative:
-   - The best proposal should score higher than others.
-   - Do NOT give all proposals similar scores unless they are genuinely equivalent.
-   - Use the full range of scores where appropriate.
+Scoring Rules (STRICT):
+- Requirement Match: 0–40
+  - Missing any required item, quantity, or specification → subtract 5–15 points
+- Clarity & Completeness: 0–20
+  - Vague pricing, timelines, or unclear commitments → subtract 3–8 points
+- Feasibility & Risk: 0–20
+  - Unclear delivery plan, weak warranty, or operational risk → subtract 3–10 points
+- Value for Money: 0–20
+  - Over budget or poor value justification → subtract 5–15 points
+  - Missing pricing entirely → score 0 here
 
-4. Recommendation logic:
-   - "Accept": Clearly meets requirements and is among the top performers.
-   - "Consider": Meets most requirements but has notable trade-offs or risks.
-   - "Reject": Fails to meet key requirements or is clearly weaker than others.
+You MUST return subscores and total.
 
-5. Be strict and realistic. Avoid overly generous scoring.
-6. Base your evaluation ONLY on the provided proposal content and RFP requirements.
-7. Do NOT invent missing information. Penalize unclear or missing details.
+Return ONLY valid JSON in this EXACT schema:
+{
+  "breakdown": {
+    "requirementMatch": number,
+    "clarity": number,
+    "feasibility": number,
+    "valueForMoney": number
+  },
+  "score": number,
+  "summary": string,
+  "recommendation": "Accept" | "Reject" | "Consider"
+}
 
-Return ONLY a JSON array with this exact schema:
-[
-  {
-    "score": number,
-    "summary": string,
-    "recommendation": "Accept" | "Reject" | "Consider"
-  }
-]
-
-          `,
+The final score MUST equal the sum of all breakdown fields.
+                    `,
                 },
                 {
                     role: 'user',
@@ -114,9 +139,9 @@ Return ONLY a JSON array with this exact schema:
 RFP Requirements:
 ${JSON.stringify(rfpRequirements, null, 2)}
 
-Proposals:
-${JSON.stringify(proposals, null, 2)}
-          `,
+Proposal Content:
+${proposal.rawEmailContent}
+                    `,
                 },
             ],
         });
@@ -124,10 +149,147 @@ ${JSON.stringify(proposals, null, 2)}
         const text = completion.choices[0].message.content;
         return safeJsonParse(text);
     } catch (error) {
+        console.error('Error evaluating single proposal:', error);
+        throw new Error('Failed to evaluate proposal');
+    }
+}
+
+function applyCompetitiveDeductions(baseScore, facts, benchmarks) {
+    let score = baseScore;
+    const reasons = [];
+
+    // ----- PRICE -----
+    if (
+        facts.totalPrice != null &&
+        benchmarks.lowestPrice != null &&
+        facts.totalPrice > benchmarks.lowestPrice
+    ) {
+        const diffRatio =
+            (facts.totalPrice - benchmarks.lowestPrice) /
+            benchmarks.lowestPrice;
+
+        let penalty = 0;
+        if (diffRatio > 0.15) penalty = 8;
+        else if (diffRatio > 0.10) penalty = 6;
+        else if (diffRatio > 0.05) penalty = 4;
+        else penalty = 2;
+
+        score -= penalty;
+        reasons.push(`Higher pricing than lowest bidder (−${penalty})`);
+    }
+
+    // ----- DELIVERY -----
+    if (
+        facts.deliveryDays != null &&
+        benchmarks.fastestDelivery != null &&
+        facts.deliveryDays > benchmarks.fastestDelivery
+    ) {
+        const delay = facts.deliveryDays - benchmarks.fastestDelivery;
+
+        let penalty = delay > 10 ? 5 : delay > 5 ? 3 : 1;
+        score -= penalty;
+        reasons.push(`Slower delivery timeline (−${penalty})`);
+    }
+
+    // ----- WARRANTY -----
+    if (
+        facts.warrantyYears != null &&
+        benchmarks.longestWarranty != null &&
+        facts.warrantyYears < benchmarks.longestWarranty
+    ) {
+        const gap = benchmarks.longestWarranty - facts.warrantyYears;
+        const penalty = gap >= 2 ? 7 : 4;
+
+        score -= penalty;
+        reasons.push(`Shorter warranty period (−${penalty})`);
+    }
+
+    // ----- CAP PERFECT SCORE -----
+    if (score >= 100) score = 97;
+
+    return {
+        finalScore: Math.max(score, 0),
+        deductionReasons: reasons,
+    };
+}
+
+
+function buildFinalSummary(baseSummary, deductionReasons) {
+    if (!deductionReasons.length) {
+        return baseSummary + ' No competitive disadvantages were identified.';
+    }
+
+    return (
+        baseSummary +
+        ' Competitive considerations: ' +
+        deductionReasons.join('; ') +
+        '.'
+    );
+}
+
+
+async function evaluateProposals(proposals, rfpRequirements) {
+    try {
+        const evaluations = [];
+
+        // 1. Extract proposal facts
+        for (const proposal of proposals) {
+            proposal._facts = await extractProposalFacts(proposal);
+        }
+
+        // 2. Compute benchmarks
+        const benchmarks = {
+            lowestPrice: Math.min(
+                ...proposals
+                    .map(p => p._facts.totalPrice)
+                    .filter(v => v != null)
+            ),
+            fastestDelivery: Math.min(
+                ...proposals
+                    .map(p => p._facts.deliveryDays)
+                    .filter(v => v != null)
+            ),
+            longestWarranty: Math.max(
+                ...proposals
+                    .map(p => p._facts.warrantyYears)
+                    .filter(v => v != null)
+            ),
+        };
+
+        // 3. LLM evaluation + deterministic deductions
+        for (const proposal of proposals) {
+            const evaluation = await evaluateSingleProposal(
+                proposal,
+                rfpRequirements
+            );
+
+            const { finalScore, deductionReasons } =
+                applyCompetitiveDeductions(
+                    evaluation.score,
+                    proposal._facts,
+                    benchmarks
+                );
+
+            const finalSummary = buildFinalSummary(
+                evaluation.summary,
+                deductionReasons
+            );
+
+            evaluations.push({
+                ...evaluation,
+                score: finalScore,
+                summary: finalSummary,
+            });
+        }
+
+
+        return evaluations;
+    } catch (error) {
         console.error('Error evaluating proposals:', error);
         throw new Error('Failed to evaluate proposals');
     }
 }
+
 
 async function compareProposals(proposals, rfpRequirements) {
     try {
